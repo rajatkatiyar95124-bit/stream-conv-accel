@@ -1,2 +1,1 @@
-# Streaming Convolution 
-Accelerator
+# Streaming Convolution Accelerator
