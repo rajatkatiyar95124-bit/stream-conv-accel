@@ -1,48 +1,202 @@
 # Streaming Convolution Accelerator
 
-\## Design Decisions
+**A streaming 3×3 image convolution accelerator built with SystemVerilog.**
 
+Pixels arrive one per clock cycle, two image rows are buffered, and a pipelined datapath computes convolution outputs. A Python fixed-point golden model serves as the reference for RTL verification.
 
+---
 
-\### Architecture
+## Project Status
 
-\- \*\*Operation:\*\* 3×3 valid convolution on an 8-bit pixel stream.
+**Current Phase: 2 of 6 — Line Buffer & Sliding Window**
 
-\- \*\*Line buffers:\*\* Two line buffers retain the previous two image rows, enabling a 3×3 sliding window without storing the entire image.
+| Phase | Milestone | Status |
+|:---:|---|:---:|
+| 1 | Setup, golden model, architecture & timing sketches | ✅ Complete |
+| 2 | Line buffer & 3×3 window generator | 🔄 In Progress |
+| 3 | MAC array, adder tree, bias, ReLU & saturation | ⏳ Planned |
+| 4 | Top-level integration & self-checking testbench | ⏳ Planned |
+| 5 | Synthesis, pipeline-depth & memory experiments | ⏳ Planned |
+| 6 | Image demo & final documentation | ⏳ Planned |
 
-\- \*\*Window registers:\*\* Nine pixel registers hold the current 3×3 window.
+---
 
-\- \*\*Arithmetic:\*\* Nine signed 8-bit weights multiply the unsigned 8-bit pixels. The products are accumulated using a pipelined adder tree.
+## Architecture
 
-\- \*\*Post-processing:\*\* Add a signed bias, apply ReLU, and saturate the result to the unsigned 8-bit range \[0, 255].
+The accelerator processes image pixels in raster order and generates a valid 3×3 window without storing the entire image.
 
-\- \*\*Control:\*\* Row and column counters track pixel positions. Window validity is asserted only when a complete 3×3 window is available.
+![Block diagram](docs/block_diagram.png)
 
-\- \*\*Streaming interface:\*\* `valid\_in` indicates valid input pixels. `valid\_out` is delayed to align with the arithmetic pipeline.
+```text
+                  ┌─────────────────┐
+Pixel Stream ────►│   Line Buffers  │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │  3×3 Window     │
+                  │   Generator     │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │  9 Multipliers  │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Pipelined Adder │
+                  │      Tree       │
+                  └────────┬────────┘
+                           ▼
+                  ┌─────────────────┐
+                  │ Bias + ReLU +   │
+                  │   Saturation    │
+                  └────────┬────────┘
+                           ▼
+                      Output Stream
+```
 
+A control unit tracks the row and column counters and generates `valid_out`, aligned with the datapath's pipeline latency.
 
+## Design Specifications
 
-\### Verification Strategy
+| Parameter | Specification |
+|---|---|
+| Input pixel | 8-bit unsigned |
+| Kernel weight | 8-bit signed |
+| Kernel size | 3×3 |
+| Multiplication | 9 parallel multipliers |
+| Padding | None — valid convolution |
+| Input throughput | One pixel per clock when `valid_in` is high |
+| Reset | Synchronous, active-high |
+| Output activation | ReLU |
+| Output format | 8-bit unsigned, saturated |
+| Flow control | No backpressure |
 
-\- A Python golden model provides the reference output for convolution, bias, ReLU, and saturation.
+### Convolution Behavior
 
-\- SystemVerilog RTL will be verified through simulation and compared against the Python reference model.
+For an input image of height \(H\) and width \(W\), valid convolution produces an output of size:
 
-\- A standalone counter testbench has been simulated successfully in Vivado to validate the basic simulation workflow.
+\[
+(H-2)\times(W-2)
+\]
 
+The first valid window completes at pixel index:
 
+```text
+2*W + 2
+```
 
-\### Initial Test Configuration
+using zero-based indexing and row-major pixel arrival.
 
-\- Input image: 8×8 unsigned 8-bit pixels.
+A window is valid when:
 
-\- Kernel: Sobel-X, represented using signed 8-bit coefficients.
+```systemverilog
+row >= 2 && col >= 2
+```
 
-\- Padding: None (valid convolution).
+Invalid windows are not repaired or reset. The window registers continue shifting, while `valid_out` remains low for invalid positions.
 
-\- Expected output dimensions: 6×6.
+### Arithmetic Datapath
 
-\- Initial bias: 0.
+Each 3×3 window is multiplied element-wise by the kernel weights. The products are accumulated, bias is added, and the result passes through an arithmetic right shift, ReLU, and 8-bit saturation.
 
-\- Initial right shift: 0.
+The accumulator width is targeted at 20 bits, subject to confirming the supported bias range and overflow behavior.
 
+---
+
+## Timing Analysis
+
+The timing sketch illustrates pixel arrival, valid-window positions, line-buffer contents, and row-boundary behavior.
+
+![Timing sketch](docs/timing_sketch.png)
+
+Key observations:
+
+- Two line buffers retain the previous two image rows.
+- Horizontal window registers retain the previous two columns.
+- The first valid 3×3 window appears at pixel index `2*W + 2`.
+- The number of valid output pixels is `(H - 2) × (W - 2)`.
+
+---
+
+## Repository Structure
+
+```text
+stream-conv-accel/
+├── rtl/       # Synthesizable SystemVerilog modules
+├── tb/        # Testbenches and verification
+├── model/     # Python golden model
+├── data/      # Test images and expected outputs
+├── docs/      # Architecture diagrams and timing sketches
+├── scripts/   # Helper and automation scripts
+└── README.md  # Project documentation
+```
+
+## Python Golden Model
+
+The reference implementation is available at [`model/golden.py`](model/golden.py).
+
+It performs:
+
+1. Valid 3×3 window extraction.
+2. Signed-weight multiplication and accumulation.
+3. Bias addition and arithmetic right shift.
+4. ReLU activation.
+5. Saturation to an unsigned 8-bit output.
+
+Run the model with Python and NumPy installed:
+
+```bash
+python model/golden.py
+```
+
+The golden model will serve as the functional reference for the convolution RTL testbench.
+
+---
+
+## Simulation & Verification
+
+RTL simulation is performed using **AMD Xilinx Vivado (xsim)**.
+
+The repository currently includes an initial counter module and testbench used to validate the simulation workflow. The convolution-specific RTL and self-checking testbench are planned for subsequent phases.
+
+---
+
+## Synthesis & Performance Evaluation
+
+Planned measurements for Phase 5 include:
+
+- Maximum operating frequency (**Fmax**)
+- LUT, flip-flop, DSP and BRAM utilization
+- Pipeline-depth trade-offs
+- Line-buffer versus frame-buffer memory requirements
+
+Results will be documented after synthesis and implementation experiments.
+
+---
+
+## Limitations & Future Work
+
+**Current scope**
+
+- Single-channel image processing
+- Fixed 3×3 convolution
+- No padding
+- No backpressure or ready/valid handshake
+
+**Potential extensions**
+
+- BRAM-based line buffers
+- Configurable kernel dimensions
+- 2×2 max pooling
+- Ready/valid flow control
+- Hardware-versus-golden-model regression testing
+
+---
+
+## Tools & Technologies
+
+`SystemVerilog` · `Vivado` · `Python` · `NumPy` · `Git` · `GitHub`
+
+---
+
+*Developed as an RTL design project exploring streaming image processing, hardware pipelining, and verification.*
