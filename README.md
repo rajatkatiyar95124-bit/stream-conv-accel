@@ -1,120 +1,116 @@
 # Streaming Convolution Accelerator
 
-**A streaming 3×3 image convolution accelerator built with SystemVerilog.**
+A **SystemVerilog-based streaming image convolution accelerator** designed to process grayscale pixels one per clock cycle using line buffers, a sliding window, and a pipelined arithmetic datapath.
 
-Pixels arrive one per clock cycle, two image rows are buffered, and a pipelined datapath computes convolution outputs. A Python fixed-point golden model serves as the reference for RTL verification.
+The project focuses on RTL design, hardware pipelining, fixed-point arithmetic, and verification against a Python golden model.
 
 ---
 
 ## Project Status
 
-**Current Phase: 2 of 6 — Line Buffer & Sliding Window**
+**Phase 2 of 6 — Line Buffer & Sliding Window**
 
 | Phase | Milestone | Status |
 |:---:|---|:---:|
-| 1 | Setup, golden model, architecture & timing sketches | ✅ Complete |
-| 2 | Line buffer & 3×3 window generator | 🔄 In Progress |
-| 3 | MAC array, adder tree, bias, ReLU & saturation | ⏳ Planned |
-| 4 | Top-level integration & self-checking testbench | ⏳ Planned |
-| 5 | Synthesis, pipeline-depth & memory experiments | ⏳ Planned |
-| 6 | Image demo & final documentation | ⏳ Planned |
+| 1 | Project setup, golden model, architecture and timing documentation | Complete |
+| 2 | Line buffer and 3×3 sliding-window generator | In progress |
+| 3 | MAC datapath, adder tree, bias, ReLU and saturation | Planned |
+| 4 | Top-level integration and self-checking testbench | Planned |
+| 5 | Synthesis, timing and resource-utilization analysis | Planned |
+| 6 | Image demonstration and final documentation | Planned |
 
 ---
 
 ## Architecture
 
-The accelerator processes image pixels in raster order and generates a valid 3×3 window without storing the entire image.
+The accelerator uses a streaming architecture to generate 3×3 image windows without storing the entire image in memory.
 
-![Block diagram](docs/block_diagram.png)
+![Streaming convolution accelerator block diagram](docs/block_diagram.png)
+
+**Processing flow**
 
 ```text
-                  ┌─────────────────┐
-Pixel Stream ────►│   Line Buffers  │
-                  └────────┬────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │  3×3 Window     │
-                  │   Generator     │
-                  └────────┬────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │  9 Multipliers  │
-                  └────────┬────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │ Pipelined Adder │
-                  │      Tree       │
-                  └────────┬────────┘
-                           ▼
-                  ┌─────────────────┐
-                  │ Bias + ReLU +   │
-                  │   Saturation    │
-                  └────────┬────────┘
-                           ▼
-                      Output Stream
+Pixel Stream
+     │
+     ▼
+Line Buffers
+     │
+     ▼
+3×3 Sliding Window
+     │
+     ▼
+9 Parallel Multipliers
+     │
+     ▼
+Pipelined Adder Tree
+     │
+     ▼
+Bias → ReLU → Saturation
+     │
+     ▼
+Output Stream
 ```
 
-A control unit tracks the row and column counters and generates `valid_out`, aligned with the datapath's pipeline latency.
+A control unit tracks pixel coordinates and generates `valid_out`, aligned with the datapath latency.
+
+---
 
 ## Design Specifications
 
 | Parameter | Specification |
 |---|---|
-| Input pixel | 8-bit unsigned |
-| Kernel weight | 8-bit signed |
-| Kernel size | 3×3 |
-| Multiplication | 9 parallel multipliers |
-| Padding | None — valid convolution |
-| Input throughput | One pixel per clock when `valid_in` is high |
+| Input | 8-bit unsigned grayscale pixels |
+| Kernel | 3×3, with signed 8-bit weights |
+| Multipliers | 9 parallel multipliers (planned datapath) |
+| Convolution | Valid-only, no padding |
+| Input rate | Up to one pixel per clock when `valid_in` is high |
 | Reset | Synchronous, active-high |
-| Output activation | ReLU |
-| Output format | 8-bit unsigned, saturated |
-| Flow control | No backpressure |
+| Activation | ReLU |
+| Output | 8-bit unsigned, saturated |
+| Backpressure | Not supported in the current design scope |
 
-### Convolution Behavior
+### Convolution and Window Validity
 
-For an input image of height \(H\) and width \(W\), valid convolution produces an output of size:
+For an input image of height \(H\) and width \(W\), the output dimensions are:
 
 \[
 (H-2)\times(W-2)
 \]
 
-The first valid window completes at pixel index:
+The first valid window completes at zero-based pixel index:
 
 ```text
 2*W + 2
 ```
 
-using zero-based indexing and row-major pixel arrival.
-
-A window is valid when:
+For row-major input, the window is valid when:
 
 ```systemverilog
 row >= 2 && col >= 2
 ```
 
-Invalid windows are not repaired or reset. The window registers continue shifting, while `valid_out` remains low for invalid positions.
+Invalid windows are not reset or repaired. The window continues shifting, while `valid_out` is held low for invalid positions.
 
 ### Arithmetic Datapath
 
-Each 3×3 window is multiplied element-wise by the kernel weights. The products are accumulated, bias is added, and the result passes through an arithmetic right shift, ReLU, and 8-bit saturation.
+Each 3×3 window is multiplied element-wise by the kernel weights. The products are accumulated, bias is added, and the result passes through an arithmetic right shift, ReLU, and saturation to 8 bits.
 
-The accumulator width is targeted at 20 bits, subject to confirming the supported bias range and overflow behavior.
+The target accumulator width is **20 bits**, subject to the final bias range and overflow analysis.
 
 ---
 
 ## Timing Analysis
 
-The timing sketch illustrates pixel arrival, valid-window positions, line-buffer contents, and row-boundary behavior.
+The timing sketch illustrates pixel arrival order, valid-window positions, line-buffer contents, and row-boundary behavior.
 
-![Timing sketch](docs/timing_sketch.png)
+![Timing sketch for the 3x3 sliding window](docs/timing_sketch.png)
 
 Key observations:
 
-- Two line buffers retain the previous two image rows.
+- Two line buffers retain pixels from the previous two image rows.
 - Horizontal window registers retain the previous two columns.
-- The first valid 3×3 window appears at pixel index `2*W + 2`.
-- The number of valid output pixels is `(H - 2) × (W - 2)`.
+- For a 5×5 image, the first valid window completes at pixel 12.
+- The total number of valid output pixels is \((H-2)(W-2)\).
 
 ---
 
@@ -122,20 +118,20 @@ Key observations:
 
 ```text
 stream-conv-accel/
-├── rtl/       # Synthesizable SystemVerilog modules
+├── rtl/       # SystemVerilog design modules
 ├── tb/        # Testbenches and verification
 ├── model/     # Python golden model
 ├── data/      # Test images and expected outputs
-├── docs/      # Architecture diagrams and timing sketches
-├── scripts/   # Helper and automation scripts
+├── docs/      # Architecture and timing diagrams
+├── scripts/   # Helper scripts
 └── README.md  # Project documentation
 ```
 
 ## Python Golden Model
 
-The reference implementation is available at [`model/golden.py`](model/golden.py).
+The reference model is available in [`model/golden.py`](model/golden.py).
 
-It performs:
+It implements:
 
 1. Valid 3×3 window extraction.
 2. Signed-weight multiplication and accumulation.
@@ -149,7 +145,7 @@ Run the model with Python and NumPy installed:
 python model/golden.py
 ```
 
-The golden model will serve as the functional reference for the convolution RTL testbench.
+The model serves as the functional reference for future RTL-versus-model verification.
 
 ---
 
@@ -157,39 +153,37 @@ The golden model will serve as the functional reference for the convolution RTL 
 
 RTL simulation is performed using **AMD Xilinx Vivado (xsim)**.
 
-The repository currently includes an initial counter module and testbench used to validate the simulation workflow. The convolution-specific RTL and self-checking testbench are planned for subsequent phases.
+The repository currently includes an initial counter module and testbench used to validate the simulation workflow. The convolution-specific RTL datapath, line buffers, and self-checking testbench are part of the ongoing development.
 
 ---
 
 ## Synthesis & Performance Evaluation
 
-Planned measurements for Phase 5 include:
+Planned evaluation metrics for Phase 5 include:
 
-- Maximum operating frequency (**Fmax**)
+- Maximum operating frequency (Fmax)
 - LUT, flip-flop, DSP and BRAM utilization
 - Pipeline-depth trade-offs
 - Line-buffer versus frame-buffer memory requirements
 
-Results will be documented after synthesis and implementation experiments.
+Results will be added after synthesis and implementation experiments.
 
 ---
 
 ## Limitations & Future Work
 
 **Current scope**
-
 - Single-channel image processing
-- Fixed 3×3 convolution
+- Fixed 3×3 kernel
 - No padding
 - No backpressure or ready/valid handshake
 
 **Potential extensions**
-
 - BRAM-based line buffers
 - Configurable kernel dimensions
 - 2×2 max pooling
 - Ready/valid flow control
-- Hardware-versus-golden-model regression testing
+- Automated RTL-versus-golden-model regression testing
 
 ---
 
@@ -199,4 +193,4 @@ Results will be documented after synthesis and implementation experiments.
 
 ---
 
-*Developed as an RTL design project exploring streaming image processing, hardware pipelining, and verification.*
+*An ongoing RTL design project exploring streaming image processing, hardware pipelining, and verification.*
